@@ -1,28 +1,64 @@
 #!/bin/env python3
 
-from typing import Final
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from time import sleep, time
+from telegram.ext import Application, CommandHandler, ContextTypes
+from time import time
 import os
 import asyncio
+from src.utils.logger import log_info, log_error, log_warning
+from datetime import datetime, timedelta
 
+from dotenv import load_dotenv
+
+log_info("Info Message")
+log_warning("Warning Message")
+log_error("Error Message")
+
+load_dotenv()
 
 LOCK_FILE = "/home/rabounou/.lock_time"
-TOKEN: Final = "7888005955:AAEbrynGhQ_U-Rj564ompvS3uOJhDpZckpQ"
-BOT_USERNAME: Final = "loggingmasterbot"
-USER_ID = "7862638491"
+USER_ID = os.environ.get("USER_ID")
+BOT_USERNAME = os.environ.get("BOT_USERNAME")
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+
+delete_queue = []
+
+async def schedule_deletion(chat_id, message_id, delay_seconds=3600):
+    deletion_time = datetime.now() + timedelta(seconds=delay_seconds)
+    delete_queue.append((deletion_time, chat_id, message_id))
+
+async def deletion_worker(bot):
+    while True:
+        now = datetime.now()
+        for item in delete_queue[:]:  # copy to avoid mutation issues
+            deletion_time, chat_id, message_id = item
+            if now >= deletion_time:
+                try:
+                    await bot.delete_message(chat_id=chat_id, message_id=message_id)
+                except Exception as e:
+                    print(f"Delete failed: {e}")
+                delete_queue.remove(item)
+        await asyncio.sleep(60)
+
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    await update.message.reply_text(user_id)
-    await update.message.reply_text("Hello, what can i do for you! ")
+    # user_id = update.effective_user.id
+    # await update.message.reply_text(user_id)
+    msg = await update.message.reply_text("Hello, what can i do for you!")
+    await schedule_deletion(msg.chat.id, msg.message_id)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("tell me what you want")
+    msg = await update.message.reply_text("tell me what you want\n/check\n/logtime")
+    await schedule_deletion(msg.chat.id, msg.message_id)
+
+async def logtime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = await update.message.reply_text("Soon !!!")
+    await schedule_deletion(msg.chat.id, msg.message_id)
+
 
 async def custom_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("what do you want to customize")
+    msg = await update.message.reply_text("what do you want to customize")
+    await schedule_deletion(msg.chat.id, msg.message_id)
 
 async def start_lock_check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -30,7 +66,8 @@ async def start_lock_check_command(update: Update, context: ContextTypes.DEFAULT
         with open (LOCK_FILE, "r") as f:
             line: str = f.readline().strip()
         if not line.isnumeric():
-            await update.message.reply_text("The screen is not locked `correctly`.")
+            msg = await update.message.reply_text("The screen is not locked `correctly`.")
+            await schedule_deletion(msg.chat.id, msg.message_id)
             return
         lock_time = int(line)
         current_time = int(time())
@@ -39,20 +76,23 @@ async def start_lock_check_command(update: Update, context: ContextTypes.DEFAULT
         if current_time < timeout:
             remaining = timeout - current_time
             minutes = remaining //60
-            await update.message.reply_text(f"Screen is still locked. {minutes}m left before logout.🔓")
+            msg = await update.message.reply_text(f"Screen is still locked. {minutes}m left before logout.🔓")
+            await schedule_deletion(msg.chat.id, msg.message_id)
         else:
-            await update.message.reply_text("Screen is not locked or timeout has passed.🔓")
+            msg = await update.message.reply_text("Screen is not locked or timeout has passed.🔓")
+            await schedule_deletion(msg.chat.id, msg.message_id)
     except FileNotFoundError:
-        await update.message.reply_text("Screen is not locked or timeout has passed.🔓")
+        msg = await update.message.reply_text("Screen is not locked or timeout has passed.🔓")
+        await schedule_deletion(msg.chat.id, msg.message_id)
     except Exception as e:
-        await update.message.reply_text(f"An error occurred: {str(e)}⚠️")
+        log_error("start lock check command error")
 
 
 async def background_lock_monitor(bot):
     while True:
         try:
             if not os.path.exists(LOCK_FILE):
-                await bot.send_message(chat_id=USER_ID, text="Screen is not locked or .lock_time missing 🔓.")
+                # await bot.send_message(chat_id=USER_ID, text="Screen is not locked or .lock_time missing 🔓.")
                 await asyncio.sleep(60)
                 continue
 
@@ -60,7 +100,7 @@ async def background_lock_monitor(bot):
                 line: str = f.readline().strip()
 
             if not line.isnumeric():
-                await bot.send_message(chat_id=USER_ID, text="The screen is not locked correctly ⚠️.")
+                # await bot.send_message(chat_id=USER_ID, text="The screen is not locked correctly ⚠️.")
                 await asyncio.sleep(60)
                 continue
 
@@ -74,9 +114,11 @@ async def background_lock_monitor(bot):
 
                 if minutes <= 7:
                     if (minutes == 1):
-                        await bot.send_message(chat_id=USER_ID, text="You are about to be logged out ⚠️⚠️⚠️")
+                        msg = await bot.send_message(chat_id=USER_ID, text="You are about to be logged out ⚠️⚠️⚠️")
+                        await schedule_deletion(msg.chat.id, msg.message_id)
                     else:
-                        await bot.send_message(chat_id=USER_ID, text=f"{minutes}m left before logout.")
+                        msg = await bot.send_message(chat_id=USER_ID, text=f"{minutes}m left before logout.")
+                        await schedule_deletion(msg.chat.id, msg.message_id)
                     await asyncio.sleep(60)
                 else:
                     await asyncio.sleep(60)
@@ -85,7 +127,7 @@ async def background_lock_monitor(bot):
                 return
 
         except Exception as e:
-            await bot.send_message(chat_id=USER_ID, text=f"⚠️ Error in lock monitor: {str(e)}")
+            # await bot.send_message(chat_id=USER_ID, text=f"⚠️ Error in lock monitor: {str(e)}")
             await asyncio.sleep(60)  # Check every minute
 
 # Errors
@@ -94,13 +136,18 @@ async def error(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def post_init(application: Application):
     application.create_task(background_lock_monitor(application.bot))
+    application.create_task(deletion_worker(application.bot))
 
 
-if __name__ == "__main__":
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
-
+def main():
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler(["help", "h"], help_command))
+    app.add_handler(CommandHandler(["logtime", "lg"], logtime_command))
+    # app.add_handler(CommandHandler("h", help_command))
     app.add_handler(CommandHandler("check", start_lock_check_command))
-
     print("Starting bot...")
     app.run_polling(poll_interval=3)
+
+if __name__ == "__main__":
+    main()
